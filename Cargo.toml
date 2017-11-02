@@ -1,0 +1,27 @@
+[package]
+name = "tokio-nat-traversal"
+version = "0.1.0"
+authors = ["Andrew Cann <shum@canndrew.org>"]
+
+[dependencies]
+lazy_static = "*"
+tokio-io = "*"
+tokio-core = "*"
+futures = "*"
+rust_sodium = "*"
+get_if_addrs = "*"
+unwrap = "*"
+rand = "*"
+bytes = "*"
+net2 = "*"
+net-literals = "*"
+bincode = "*"
+future-utils = "0.2.1"
+serde = "*"
+serde_derive = "*"
+env_logger = "*"
+void = "*"
+log = "*"
+quick-error = "*"
+igd = "*"
+
