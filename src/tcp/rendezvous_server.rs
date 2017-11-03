@@ -3,7 +3,8 @@ use tokio_io;
 use bincode::{self, Infinite};
 
 use ECHO_REQ;
-use tcp::listener::{self, TcpListenerExt, BindPublicError};
+use tcp::listener::{self, TcpListenerExt};
+use open_addr::BindPublicError;
 //use socket_addr::MapTcpError;
 
 pub struct TcpRendezvousServer {
@@ -34,7 +35,7 @@ impl TcpRendezvousServer {
         handle: &Handle,
     ) -> BoxFuture<(TcpRendezvousServer, SocketAddr), BindPublicError> {
         let handle = handle.clone();
-        listener::bind_public_inner(addr, &handle)
+        listener::bind_public_with_addr(addr, &handle)
         .map(move |(listener, bind_addr, public_addr)| {
             (from_listener_inner(listener, &bind_addr, &handle), public_addr)
         })

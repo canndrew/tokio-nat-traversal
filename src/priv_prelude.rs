@@ -23,6 +23,8 @@ pub use rand::Rng;
 pub use void::{Void, ResultVoidExt};
 
 pub use util::{Timeout, UtilFutureExt, HashSetExt};
+pub use protocol::Protocol;
+pub use mc::QueryPublicAddrError;
 
 pub use prelude::*;
 

@@ -1,0 +1,78 @@
+use priv_prelude::*;
+
+pub fn filter_addrs(
+    our_addrs: &HashSet<SocketAddr>,
+    their_addrs: &HashSet<SocketAddr>,
+) -> HashSet<SocketAddr> {
+    let our_global_addrs = {
+        our_addrs
+        .iter()
+        .cloned()
+        .filter(|addr| IpAddrExt::is_global(&addr.ip()))
+        .collect::<HashSet<_>>()
+    };
+    let our_private_addrs = {
+        our_addrs
+        .iter()
+        .cloned()
+        .filter(|addr| addr.ip().is_private())
+        .collect::<HashSet<_>>()
+    };
+    let their_global_addrs = {
+        their_addrs
+        .iter()
+        .cloned()
+        .filter(|addr| IpAddrExt::is_global(&addr.ip()))
+        .collect::<HashSet<_>>()
+    };
+    let any_global_ips_in_common = {
+        their_global_addrs
+        .iter()
+        .any(|a0| {
+            our_global_addrs.iter().any(|a1| a0.ip() == a1.ip())
+        })
+    };
+    let maybe_same_subnet = any_global_ips_in_common || (
+        their_global_addrs.is_empty() && our_global_addrs.is_empty()
+    );
+    let their_filtered_private_addrs = {
+        if maybe_same_subnet {
+            their_addrs
+            .iter()
+            .cloned()
+            .filter(|addr| addr.ip().is_private())
+            .collect::<HashSet<_>>()
+        } else {
+            HashSet::new()
+        }
+    };
+    let any_private_ips_in_common = {
+        their_filtered_private_addrs
+        .iter()
+        .any(|a0| {
+            our_private_addrs.iter().any(|a1| a0.ip() == a1.ip())
+        })
+    };
+    let maybe_same_machine = any_private_ips_in_common || (
+        their_filtered_private_addrs.is_empty() &&
+        our_private_addrs.is_empty() &&
+        maybe_same_subnet
+    );
+    let their_filtered_loopback_addr = {
+        if maybe_same_machine {
+            their_addrs.iter().cloned().find(|addr| addr.ip().is_loopback())
+        } else {
+            None
+        }
+    };
+
+    their_global_addrs
+    .into_iter()
+    .chain({
+        their_filtered_private_addrs
+        .into_iter()
+        .chain(their_filtered_loopback_addr)
+    })
+    .collect()
+}
+

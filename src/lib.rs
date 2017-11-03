@@ -28,21 +28,20 @@ extern crate igd;
 mod priv_prelude;
 mod prelude;
 
+mod protocol;
 mod ip_addr;
 mod socket_addr;
 mod tcp;
 mod udp;
 mod util;
+mod server_set;
 mod mc;
 mod igd_async;
+mod open_addr;
+mod rendezvous_addr;
+mod filter_addrs;
 
 pub use prelude::*;
 
 const ECHO_REQ: [u8; 8] = [b'E', b'C', b'H', b'O', b'A', b'D', b'D', b'R'];
-
-//mod subnet;
-//mod stun;
-//mod nat;
-//mod interface;
-//mod udp;
 

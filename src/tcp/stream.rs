@@ -3,10 +3,10 @@ use bincode::{self, Infinite};
 use tokio_io;
 use std::error::Error;
 
+use filter_addrs::filter_addrs;
 use tcp::msg::TcpRendezvousMsg;
 use tcp::builder::TcpBuilderExt;
-use igd_async::{self, GetAnyAddressError};
-use mc;
+use rendezvous_addr::{rendezvous_addr, RendezvousAddrError};
 
 const RENDEZVOUS_TIMEOUT_SEC: u64 = 10;
 
@@ -43,7 +43,7 @@ where
     ChannelRead(<C as Stream>::Error),
     ChannelWrite(<C as Sink>::SinkError),
     DeserializeMsg(bincode::Error),
-    AllAttemptsFailed(Vec<SingleRendezvousAttemptError>, Option<GetAnyAddressError>, Option<RendezvousAddrError>),
+    AllAttemptsFailed(Vec<SingleRendezvousAttemptError>, Option<RendezvousAddrError>),
 }
 
 impl<C> fmt::Display for TcpRendezvousConnectError<C>
@@ -72,10 +72,7 @@ where
             DeserializeMsg(ref e) => {
                 write!(f, "error: {}", e)?;
             },
-            AllAttemptsFailed(ref attempt_errors, ref igd_error, ref map_error) => {
-                if let Some(ref igd_error) = *igd_error {
-                    write!(f, "IGD failed with error: {}. ", igd_error)?;
-                }
+            AllAttemptsFailed(ref attempt_errors, ref map_error) => {
                 if let Some(ref map_error) = *map_error {
                     write!(f, "Rendezvous address creation failed with error: {}. ", map_error)?;
                 }
@@ -150,29 +147,6 @@ quick_error! {
     }
 }
 
-quick_error! {
-    #[derive(Debug)]
-    pub enum RendezvousAddrError {
-        InconsistentIpAddrs(a0: IpAddr, a1: IpAddr) {
-            description("traversal servers giving global IP addresses")
-            display("traversal servers giving global IP addresses. Got both {} and {}", a0, a1)
-        }
-        UnpredictablePorts(p0: u16, p1: u16, p2: u16) {
-            description("NAT is not giving us consistent or predictable external ports")
-            display("NAT is not giving us consistent or predictable external ports. \
-                    Got {}, then {}, then {}", p0, p1, p2)
-        }
-        HitErrorLimit(v: Vec<mc::MapTcpError>) {
-            description("hit error limit trying to contact traversal servers")
-            display("hit error limit trying to contact traversal servers. \
-                    Got {} errors: {:#?}", v.len(), v)
-        }
-        LackOfServers {
-            description("more traversal servers needed to perform TCP hole-punching")
-        }
-    }
-}
-
 pub trait TcpStreamExt {
     fn connect_reusable(
         bind_addr: &SocketAddr,
@@ -242,36 +216,15 @@ impl TcpStreamExt for TcpStream {
                 .expanded_local_addrs()
                 .map_err(TcpRendezvousConnectError::IfAddrs)?
             };
-
-            let our_global_addrs = {
-                addrs
-                .iter()
-                .cloned()
-                .filter(|addr| IpAddrExt::is_global(&addr.ip()))
-                .collect::<HashSet<_>>()
-            };
-            let our_private_addrs = {
-                addrs
-                .iter()
-                .cloned()
-                .filter(|addr| addr.ip().is_private())
-                .collect::<HashSet<_>>()
-            };
+            let our_addrs = addrs.iter().cloned().collect();
 
             Ok({
-                igd_async::tcp_get_any_address(bind_addr)
-                .map(|addr| (Some(addr), None, None))
-                .or_else({
-                    let handle = handle.clone();
-                    move |igd_err| {
-                        rendezvous_addr(bind_addr, &handle)
-                        .then(|res| match res {
-                            Ok(addr) => Ok((Some(addr), Some(igd_err), None)),
-                            Err(e) => Ok((None, Some(igd_err), Some(e))),
-                        })
-                    }
+                rendezvous_addr(Protocol::Tcp, &bind_addr, &handle)
+                .then(|res| match res {
+                    Ok(addr) => Ok((Some(addr), None)),
+                    Err(e) => Ok((None, Some(e))),
                 })
-                .and_then(move |(rendezvous_addr_opt, igd_err, map_error)| {
+                .and_then(move |(rendezvous_addr_opt, map_error)| {
                     let msg = TcpRendezvousMsg::Init {
                         enc_pk: pk,
                         open_addrs: addrs,
@@ -295,68 +248,12 @@ impl TcpStreamExt for TcpStream {
                         let TcpRendezvousMsg::Init { enc_pk: their_pk, open_addrs, rendezvous_addr } = msg;
 
                         // filter our subnet and loopback addresess if they can't possibly be useful.
-                        let their_global_addrs = {
-                            open_addrs
-                            .iter()
-                            .cloned()
-                            .filter(|addr| IpAddrExt::is_global(&addr.ip()))
-                            .collect::<HashSet<_>>()
-                        };
-                        let any_global_ips_in_common = {
-                            their_global_addrs
-                            .iter()
-                            .any(|a0| {
-                                our_global_addrs.iter().any(|a1| a0.ip() == a1.ip())
-                            })
-                        };
-                        let maybe_same_subnet = any_global_ips_in_common || (
-                            their_global_addrs.is_empty() && our_global_addrs.is_empty()
-                        );
-                        let their_private_addrs = {
-                            if maybe_same_subnet {
-                                open_addrs
-                                .iter()
-                                .cloned()
-                                .filter(|addr| addr.ip().is_private())
-                                .collect::<HashSet<_>>()
-                            } else {
-                                HashSet::new()
-                            }
-                        };
-                        let any_private_ips_in_common = {
-                            their_private_addrs
-                            .iter()
-                            .any(|a0| {
-                                our_private_addrs.iter().any(|a1| a0.ip() == a1.ip())
-                            })
-                        };
-                        let maybe_same_machine = any_private_ips_in_common || (
-                            their_private_addrs.is_empty() &&
-                            our_private_addrs.is_empty() &&
-                            maybe_same_subnet
-                        );
-                        let their_loopback_addr = {
-                            if maybe_same_machine {
-                                open_addrs.iter().cloned().find(|addr| addr.ip().is_loopback())
-                            } else {
-                                None
-                            }
-                        };
-
-                        let their_addrs = {
-                            their_global_addrs
-                            .into_iter()
-                            .chain({
-                                their_private_addrs
-                                .into_iter()
-                                .chain({
-                                    their_loopback_addr
-                                    .into_iter()
-                                    .chain(rendezvous_addr)
-                                })
-                            })
-                        };
-
+                        let their_addrs = open_addrs.into_iter().collect();
+                        let mut their_addrs = filter_addrs(&our_addrs, &their_addrs);
+                        if let Some(rendezvous_addr) = rendezvous_addr {
+                            their_addrs.insert(rendezvous_addr);
+                        }
+                        
                         let connectors = {
                             their_addrs
                             .into_iter()
@@ -411,7 +308,7 @@ impl TcpStreamExt for TcpStream {
                             .into_boxed()
                         }
                         .first_ok()
-                        .map_err(|v| TcpRendezvousConnectError::AllAttemptsFailed(v, igd_err, map_error))
+                        .map_err(|v| TcpRendezvousConnectError::AllAttemptsFailed(v, map_error))
                         .into_boxed()
                     })
                 })
@@ -451,104 +348,6 @@ where
     }
 }
 
-fn rendezvous_addr(bind_addr: SocketAddr, handle: &Handle) -> BoxFuture<SocketAddr, RendezvousAddrError> {
-    let handle = handle.clone();
-    let mut servers = mc::tcp_traversal_servers();
-    let mut active_queries = stream::FuturesOrdered::<BoxFuture<SocketAddr, mc::MapTcpError>>::new();
-    let mut errors = Vec::new();
-    let mut more_servers_timeout = None::<Timeout>;
-    let mut ports = Vec::new();
-    let mut known_ip_opt = None;
-    let mut failed_sequences = 0;
-
-    future::poll_fn(move || {
-        loop {
-            match active_queries.poll() {
-                Err(e) => errors.push(e),
-                Ok(Async::Ready(Some(addr))) => {
-                    let ip = addr.ip();
-                    if IpAddrExt::is_global(&ip) {
-                        if let Some(known_ip) = known_ip_opt {
-                            if known_ip != ip {
-                                return Err(RendezvousAddrError::InconsistentIpAddrs(known_ip, ip));
-                            }
-                        }
-                        known_ip_opt = Some(ip);
-                        ports.push(addr.port());
-                        if ports.len() == 2 {
-                            if ports[0] == ports[1] {
-                                return Ok(Async::Ready(SocketAddr::new(ip, ports[0])));
-                            }
-                        }
-                        if ports.len() == 3 {
-                            let diff0 = ports[1].wrapping_sub(ports[0]);
-                            let diff1 = ports[2].wrapping_sub(ports[1]);
-                            if diff0 == diff1 {
-                                return Ok(Async::Ready(SocketAddr::new(ip, ports[2].wrapping_add(diff0))));
-                            }
-                            else {
-                                ports.remove(0);
-                                failed_sequences += 1;
-                                if failed_sequences >= 3 {
-                                    return Err(RendezvousAddrError::UnpredictablePorts(ports[0], ports[1], ports[2]));
-                                }
-                            }
-                        }
-                    }
-                },
-                _ => (),
-            }
-
-            if errors.len() >= 5 {
-                let errors = mem::replace(&mut errors, Vec::new());
-                return Err(RendezvousAddrError::HitErrorLimit(errors));
-            }
-
-            if active_queries.len() == 3 {
-                return Ok(Async::NotReady);
-            }
-
-            match servers.poll().void_unwrap() {
-                Async::Ready(Some(server_addr)) => {
-                    let active_query = mc::tcp_query_public_addr(&bind_addr, &server_addr, &handle);
-                    active_queries.push(active_query);
-                    more_servers_timeout = None;
-                },
-                Async::Ready(None) => {
-                    if active_queries.len() == 0 {
-                        if ports.len() == 1 {
-                            let ip = unwrap!(known_ip_opt);
-                            return Ok(Async::Ready(SocketAddr::new(ip, ports[0])));
-                        }
-                        return Err(RendezvousAddrError::LackOfServers);
-                    }
-                },
-                Async::NotReady => {
-                    if active_queries.len() == 0 {
-                        loop {
-                            if let Some(ref mut timeout) = more_servers_timeout {
-                                if let Async::Ready(()) = timeout.poll().void_unwrap() {
-                                    if ports.len() == 1 {
-                                        let ip = unwrap!(known_ip_opt);
-                                        return Ok(Async::Ready(SocketAddr::new(ip, ports[0])));
-                                    }
-                                    return Err(RendezvousAddrError::LackOfServers);
-                                }
-                                break;
-                            } else {
-                                more_servers_timeout = Some(
-                                    Timeout::new(Duration::from_secs(2), &handle)
-                                );
-                            }
-                        }
-                    }
-                    return Ok(Async::NotReady);
-                },
-            }
-        }
-    })
-    .into_boxed()
-}
 
 #[cfg(test)]
 mod test {

@@ -91,7 +91,8 @@ quick_error! {
     }
 }
 
-pub fn tcp_get_any_address(
+pub fn get_any_address(
+    protocol: Protocol,
     local_addr: SocketAddr,
 ) -> BoxFuture<SocketAddr, GetAnyAddressError> {
     let try = || {
@@ -103,7 +104,11 @@ pub fn tcp_get_any_address(
             search_gateway_from_timeout(*socket_addr_v4.ip(), Duration::from_millis(200))
             .map_err(GetAnyAddressError::FindGateway)
             .and_then(move |gateway| {
-                gateway.get_any_address(PortMappingProtocol::TCP, socket_addr_v4, 0, "tokio-nat-traversal")
+                let protocol = match protocol {
+                    Protocol::Tcp => PortMappingProtocol::TCP,
+                    Protocol::Udp => PortMappingProtocol::UDP,
+                };
+                gateway.get_any_address(protocol, socket_addr_v4, 0, "tokio-nat-traversal")
                 .map_err(GetAnyAddressError::RequestPort)
                 .map(SocketAddr::V4)
             })
