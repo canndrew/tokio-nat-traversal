@@ -1,5 +1,6 @@
 use priv_prelude::*;
 use bincode;
+use tokio_shared_udp_socket::{SharedUdpSocket, WithAddress};
 use igd_async::{self, GetAnyAddressError};
 use open_addr::{open_addr, BindPublicError};
 
@@ -20,17 +21,15 @@ where
     ChannelRead(<C as Stream>::Error),
     ChannelWrite(<C as Sink>::SinkError),
     DeserializeMsg(bincode::Error),
-    AllAttemptsFailed(Vec<SingleRendezvousAttemptError>, Option<GetAnyAddressError>, Option<RendezvousAddrError>),
-}
-
-quick_error! {
-    #[derive(Debug)]
-    pub enum SingleRendezvousAttemptError {
-    }
+    SocketWrite(io::Error),
+    AllAttemptsFailed(Vec<HolePunchError>, Option<GetAnyAddressError>, Option<RendezvousAddrError>),
 }
 */
 
+/// Extension methods for `UdpSocket`.
 pub trait UdpSocketExt {
+    /// Bind reusably to the given address. This method can be used to create multiple UDP sockets
+    /// bound to the same local address.
     fn bind_reusable(addr: &SocketAddr, handle: &Handle) -> io::Result<UdpSocket>;
     fn expanded_local_addrs(&self) -> io::Result<Vec<SocketAddr>>;
 
@@ -120,12 +119,15 @@ impl UdpSocketExt for UdpSocket {
                 let UdprendezvousMsg::Init {
                     enc_pk: thier_pk,
                     open_addrs: their_open_addrs,
-                    rendezvous_addrs: their_rendezvous_addrs,
+                    rendezvous_addrs: _their_rendezvous_addrs,
                 } = their_msg;
 
                 let their_open_addrs = filter_addrs(&our_addrs, &their_open_addrs);
-                let incoming = OpenConnect::new(socket, their_open_addrs)
-                (their_pk, incoming)
+                let incoming = {
+                    open_connect(socket, their_open_addrs, true)
+                    .into_boxed()
+                };
+                (their_pk, incoming, None, None)
             })
         })
         .or_else(|bind_public_error| {
@@ -171,12 +173,7 @@ impl UdpSocketExt for UdpSocket {
                         future::result(try()).flatten()
                     })
                     .and_then(|(sockets, rendezvous_error_opt)| {
-                        let rendezvous_addrs = {
-                            sockets
-                            .iter()
-                            .map(|&(ref _socket, addr)| addr)
-                            .collect()
-                        };
+                        let (sockets, rendezvous_addrs) = sockets.into_iter().unzip::<_, Vec<_>, _>();
                         let msg = UdpRendezvousMsg::Init {
                             enc_pk: pk,
                             open_addrs: our_addrs.clone(),
@@ -184,43 +181,64 @@ impl UdpSocketExt for UdpSocket {
                         };
                         exchange_msgs(channel, msg)
                         .map(|their_msg| {
-                            let UdprendezvousMsg::Init {
+                            let UdpRendezvousMsg::Init {
                                 enc_pk: their_pk,
                                 open_addrs: their_open_addrs,
                                 rendezvous_addrs: their_rendezvous_addrs,
                             } = their_msg;
 
-                            let punchers = {
+                            let mut punchers = FuturesUnordered::new();
+                            let iter = {
                                 sockets
                                 .into_iter()
-                                .map(|(socket, _our_addr)| socket)
                                 .zip(their_rendezvous_addrs)
                                 .enumerate()
-                                .map(|((socket, their_addr), i)| {
-                                    HolePunch::new(socket, their_addr, 2 << i)
-                                })
-                                .collect()
                             };
-                            let punchers = stream::futures_unordered(punchers);
+                            for (i, (socket, their_addr)) in iter {
+                                let ttl_increment = 2 << i;
+                                socket.set_ttl(ttl_increment)?;
+                                let shared = SharedUdpSocket::share(socket);
+                                let with_addr = shared.with_addr(their_addr);
+                                let timeout = Instant::now() + Duration::millis(200);
+                                let puncher = send_from_syn(handle, shared, timeout, 0, ttl_increment);
+                                punchers.push(puncher);
+                            }
 
                             let their_open_addrs = filter_addrs(&our_addrs, &their_open_addrs);
+
                             let incoming = {
-                                OpenConnect::new(socket, their_open_addrs)
+                                open_connect(listen_socket, their_open_addrs, false)
                                 .select(punchers)
+                                .into_boxed()
                             };
-                            (their_pk, incoming)
+                            (their_pk, incoming, Some(bind_public_error), rendezvous_error_opt)
                         })
                     })
                 })
             });
             future::result(try()).flatten()
         })
-        .map(|(their_pk, incoming)| {
+        .map(|(their_pk, incoming, bind_public_error_opt, rendezouvs_error_opt)| {
             if our_pk > their_pk {
                 incoming
+                .and_then(|(socket, chosen)| {
+                    if chosen {
+                        return Err(HolePunchError::UnexpectedMessage);
+                    }
+                    Ok(socket)
+                })
                 .first_ok()
-                .
+                .and_then(choose)
+            } else {
+                incoming
+                .map(take_chosen)
+                .futures_unordered()
+                .filter_map(|opt| opt)
+                .first_ok()
             }
+            .map_err(|v| {
+                UdpRendezvousConnectError::AllAttemptsFailed(v, bind_public_error_opt, rendezvous_error_opt)
+            })
         })
     }
     */
@@ -253,98 +271,278 @@ pub fn bind_public_with_addr(
 }
 
 /*
-struct OpenConnect {
-    their_addrs: Vec<(SocketAddr, Vec<u8>)>,
-    socket: UdpSocket,
-    next_send_timeout: Timeout,
-    send_index: Vec<usize>,
-}
-
-impl OpenConnect {
-    fn new(socket: UdpSocket, their_addrs: HashSet<SocketAddr>) -> OpenConnect {
-        let mut with_data = Vec::new();
-        for addr in their_addrs {
-            let data = random_vec(8);
-            with_data.push(addr, data);
+quick_error! {
+    #[derive(Debug)]
+    pub enum HolePunchError {
+        SendMessage(e: io::Error) {
+            description("error sending message to peer")
+            display("error sending message to peer: {}", e)
+            cause(e)
         }
-        OpenConnect {
-            their_addrs: with_data,
-            socket: socket,
-            next_send_timeout: Timeout::new(Duration::from_millis(200)),
-            send_index: Vec::new(),
+        ReadMessage(e: io::Error) {
+            description("error receiving message from peer")
+            display("error receiving message from peer: {}", e)
+            cause(e)
+        }
+        RecvMessage(e: io::Error) {
+            description("error receiving message on socket")
+            display("error receiving message on socket: {}", e)
+            cause(e)
+        }
+        Deserialization(e: bincode::Error) {
+            description("error deserializing packet from peer")
+            display("error deserializing packet from peer: {}", e)
+            cause(e)
+        }
+        UnexpectedMessage {
+            description("received unexpected hole-punch message type")
         }
     }
 }
 
-impl Stream for OpenConnect {
-    type Item = (UdpSocket, SocketAddr),
-    type Error = UdpRendezvousConnectError,
+fn send_from_syn(
+    handle: &Handle,
+    socket: WithAddress,
+    next_timeout: Instant,
+    syns_acks_sent: u32,
+    ttl_increment: u32,
+) -> BoxFuture<(WithAddress, bool), HolePunchError> {
+    let handle = handle.clone();
+    let send_msg = unwrap!(bincode::serialize(&HolePunchMsg::Syn, bincode::Infinite));
 
-    fn poll(&mut self) -> Result<Async<Option<(UdpSocket, SocketAddr)>>, UdpRendezvousConnectError> {
-        while let Async::Ready(()) = self.next_send_timeout.poll().void_unwrap() {
-            let now = Instant::now();
-            self.next_send_timeout.reset(now + Duration::from_millis(200));
-            self.send_index.push(0);
-        }
+    socket
+    .send(Bytes::from(send_msg))
+    .map_err(HolePunchError::SendMessage)
+    .and_then(move |socket| {
+        let try = || {
+            let syns_acks_sent = syns_acks_sent + 1;
+            if syns_acks_sent % 5 == 0 && ttl_increment != 0 {
+                let ttl = socket.get_ref().ttl()?;
+                socket.get_ref().set_ttl(ttl + ttl_increment)?;
+            }
+            recv_from_syn(&handle, socket, next_timeout, syns_acks_sent, ttl_increment)
+        };
+        future::result(try().map_err(HolePunchError::SetTtl)).flatten()
+    })
+    .into_boxed()
+}
 
-        'outer: loop {
-            match self.send_index.front_mut() {
-                Some(index) => {
-                    while *index < self.their_addrs.len() {
-                        {
-                            let (ref addr, ref data) = self.their_addrs[*index];
-                            if let Async::Ready(()) = self.socket.poll_write() {
-                                match self.socket.send_to(data, addr) {
-                                    Ok(n) => {
-                                        if n == data.len() {
-                                            *index += 1;
-                                        }
-                                        continue;
-                                    },
-                                    Err(e) => {
-                                        if e.kind() == io::ErrorKind::WouldBlock {
-                                            self.socket.need_write();
-                                            break 'outer;
-                                        }
-                                        self.errors.insert(*addr, e)
-                                    },
-                                }
-                            }
-                        }
-                        self.their_addrs.remove(*index);
-                    }
+fn recv_from_syn(
+    handle: &Handle,
+    socket: WithAddress,
+    timeout: Instant,
+    syns_acks_sent: u32,
+    ttl_increment: u32,
+) -> BoxFuture<(WithAddress, bool), HolePunchError> {
+    let handle = handle.clone();
+    socket
+    .with_timeout_at(timeout, &handle)
+    .into_future()
+    .map_err(|(e, _)| HolePunchError::ReadMessage(e))
+    .and_then(move |(msg_opt, socket_timeout)| {
+        let socket = socket_timeout.into_inner();
+        match msg_opt {
+            None => send_from_syn(&handle, socket, timeout + Duration::from_millis(200), syns_acks_sent, ttl_increment),
+            Some(recv_msg) => {
+                match bincode::deserialize(&recv_msg) {
+                    Err(e) => {
+                        future::err(HolePunchError::Deserialization(e)).into_boxed()
+                    },
+                    Ok(HolePunchMsg::Syn) => {
+                        send_from_ack(&handle, socket, Instant::now() + Duration::from_millis(200), syns_acks_sent, ttl_increment)
+                    },
+                    Ok(HolePunchMsg::Ack) => {
+                        send_from_ack_ack(&handle, socket, Instant::now() + Duration::from_millis(200), 0)
+                    },
+                    Ok(HolePunchMsg::AckAck) | Ok(HolePunchMsg::Choose) => {
+                        future::err(HolePunchError::UnexpectedMessage).into_boxed()
+                    },
                 }
-                None => break,
-            }
-
-            self.send_index.remove(0);
+            },
         }
-
-        if let Async::Ready(()) = self.socket.read_ready() {
-            let mut buff = [0; 256];
-            match self.socket.recv_from(&mut buff) {
-                Ok((n, recv_addr)) => {
-                    if self.their_addrs.iter().any(|(addr, ref data)| {
-                        recv_addr == addr && data.len() == n
-                    }) {
-                        return Ok(Async::Ready(Some(recv_addr)));
-                    }
-                },
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::WouldBlock {
-                        self.socket.need_read();
-                    } else {
-                        return Err(e);
-                    }
-                },
-            }
-        }
-    }
+    })
+    .into_boxed()
 }
 
-struct SharedUdpSocket {
-    socket: Arc<Socket>,
-    connections: HashMap<SocketAddr, UnboundedSender<Vec<u8>>>,
+fn send_from_ack(
+    handle: &Handle,
+    socket: WithAddress,
+    next_timeout: Instant,
+    syns_acks_sent: u32,
+    ttl_increment: u32,
+) -> BoxFuture<(WithAddress, bool), HolePunchError> {
+    let handle = handle.clone();
+    let send_msg = unwrap!(bincode::serialize(&HolePunchMsg::Ack, bincode::Infinite));
+
+    socket
+    .send(Bytes::from(send_msg))
+    .map_err(HolePunchError::SendMessage)
+    .and_then(move |socket| {
+        let try = || {
+            let syns_acks_sent = syns_acks_sent + 1;
+            if syns_acks_sent % 5 == 0 && ttl_increment != 0 {
+                let ttl = socket.get_ref().ttl()?;
+                socket.get_ref().set_ttl(ttl + ttl_increment)?;
+            }
+            recv_from_ack(&handle, socket, next_timeout, syns_acks_sent, ttl_increment)
+        };
+        future::result(try().map_err(HolePunchError::SetTtl)).flatten()
+    })
+    .into_boxed()
+}
+
+fn recv_from_ack(
+    handle: &Handle,
+    socket: WithAddress,
+    timeout: Instant,
+    syns_acks_sent: u32,
+    ttl_increment: u32,
+) -> BoxFuture<(WithAddress, bool), HolePunchError> {
+    let handle = handle.clone();
+    socket
+    .with_timeout_at(timeout, &handle)
+    .into_future()
+    .map_err(|(e, _)| HolePunchError::ReadMessage(e))
+    .and_then(move |(msg_opt, socket_timeout)| {
+        let socket = socket_timeout.into_inner();
+        match msg_opt {
+            None => send_from_ack(&handle, socket, timeout + Duration::from_millis(200), syns_acks_sent, ttl_increment),
+            Some(recv_msg) => {
+                match bincode::deserialize(&recv_msg) {
+                    Err(e) => {
+                        future::err(HolePunchError::Deserialization(e)).into_boxed()
+                    },
+                    Ok(HolePunchMsg::Syn) => send_from_ack(&handle, socket, Instant::now() + Duration::from_millis(200), syns_acks_sent, ttl_increment),
+                    Ok(HolePunchMsg::Ack) => send_from_ack_ack(&handle, socket, Instant::now() + Duration::from_millis(200), 0),
+                    Ok(HolePunchMsg::AckAck) => send_final_ack_acks(&handle, socket, Instant::now() + Duration::from_millis(200), 0),
+                    Ok(HolePunchMsg::Choose) => future::ok((socket, true)).into_boxed(),
+                }
+            },
+        }
+    })
+    .into_boxed()
+}
+
+fn send_from_ack_ack(handle: &Handle, socket: WithAddress, next_timeout: Instant, ack_acks_sent: u32) -> BoxFuture<(WithAddress, bool), HolePunchError> {
+    let handle = handle.clone();
+    let send_msg = unwrap!(bincode::serialize(&HolePunchMsg::AckAck, bincode::Infinite));
+
+    socket
+    .send(Bytes::from(send_msg))
+    .map_err(HolePunchError::SendMessage)
+    .and_then(move |socket| {
+        recv_from_ack_ack(&handle, socket, next_timeout, ack_acks_sent + 1)
+    })
+    .into_boxed()
+}
+
+fn recv_from_ack_ack(handle: &Handle, socket: WithAddress, timeout: Instant, ack_acks_sent: u32) -> BoxFuture<(WithAddress, bool), HolePunchError> {
+    let handle = handle.clone();
+    socket
+    .with_timeout_at(timeout, &handle)
+    .into_future()
+    .map_err(|(e, _)| HolePunchError::ReadMessage(e))
+    .and_then(move |(msg_opt, socket_timeout)| {
+        let socket = socket_timeout.into_inner();
+        match msg_opt {
+            None => send_from_ack_ack(&handle, socket, timeout + Duration::from_millis(200), ack_acks_sent),
+            Some(recv_msg) => {
+                match bincode::deserialize(&recv_msg) {
+                    Err(e) => {
+                        future::err(HolePunchError::Deserialization(e)).into_boxed()
+                    },
+                    Ok(HolePunchMsg::Syn) => recv_from_ack_ack(&handle, socket, timeout, ack_acks_sent),
+                    Ok(HolePunchMsg::Ack) => send_from_ack_ack(&handle, socket, Instant::now() + Duration::from_millis(200), ack_acks_sent),
+                    Ok(HolePunchMsg::AckAck) => send_final_ack_acks(&handle, socket, Instant::now() + Duration::from_millis(200), ack_acks_sent),
+                    Ok(HolePunchMsg::Choose) => future::ok((socket, true)).into_boxed(),
+                }
+            },
+        }
+    })
+    .into_boxed()
+}
+
+fn send_final_ack_acks(handle: &Handle, socket: WithAddress, next_timeout: Instant, ack_acks_sent: u32) -> BoxFuture<(WithAddress, bool), HolePunchError> {
+    let handle = handle.clone();
+    if ack_acks_sent >= 5 {
+        return future::ok((socket, false)).into_boxed();
+    }
+
+    Timeout::new_at(next_timeout, &handle)
+    .infallible()
+    .and_then(move |()| {
+        send_final_ack_acks(&handle, socket, next_timeout + Duration::from_millis(200), ack_acks_sent + 1)
+    })
+    .into_boxed()
+}
+
+fn open_connect(socket: UdpSocket, their_addrs: HashSet<SocketAddr>, we_are_open: bool) -> BoxStream<WithAddress, HolePunchError> {
+    let shared = SharedUdpSocket::share(socket);
+    let mut punchers = FuturesUnordered::new();
+    for addr in their_addrs {
+        let with_addr = shared.with_address(addr);
+        punchers.push(send_from_syn(with_addr, Instant::now() + Duration::from_millis(200), 0, 0))
+    }
+
+    future::poll_fn(|| {
+        loop {
+            match shared.poll()? {
+                Async::Ready(Some(with_addr)) => {
+                    punchers.push(send_from_ack(with_addr, Instant::now() + Duration::from_millis(200)));
+                },
+                Async::Ready(None) => unreachable!(),
+                Async::NotReady => break,
+            }
+        }
+
+        match punchers.poll()? {
+            Ok(Async::Ready(Some(addr))) => {
+                Ok(Async::Ready((shared, punchers, addr)))
+            }
+            Ok(Async::Ready(None)) => {
+                if we_are_open {
+                    Ok(Async::NotReady)
+                } else {
+                    Ok(Async::Ready(None))
+                }
+            },
+        }
+    })
+}
+
+fn choose(socket: WithAddress, chooses_sent: u32) -> BoxFuture<(UdpSocket, SocketAddr), UdpRendezvousConnectError> {
+    if chooses_sent >= 5 {
+        let addr = socket.remote_addr();
+        return {
+            unwrap!(socket.try_take())
+            .map(|socket| (socket, addr))
+            .infallible()
+            .into_boxed()
+        };
+    }
+
+    socket
+    .send(HolePunchMsg::Choose)
+    .map_err(UdpRendezvousConnectError::SocketSend)
+    .and_then(|socket| {
+        Timeout::new(Duration::from_millis(200), handle)
+        .infallible()
+        .and_then(move |()| {
+            choose(socket, chooses_sent + 1)
+        })
+    })
+    .into_boxed()
+}
+
+fn take_chosen(socket: WithAddress) -> BoxFuture<Option<(UdpSocket, SocketAddr)>, UdpRendezvousConnectError> {
+    ...
+}
+
+#[derive(Serialize, Deserialize)]
+enum HolePunchMsg {
+    Syn,
+    Ack,
+    AckAck,
 }
 */
 

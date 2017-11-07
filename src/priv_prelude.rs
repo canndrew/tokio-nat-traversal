@@ -9,6 +9,7 @@ pub use std::hash::Hash;
 pub use futures::{future, stream, sink, Future, Stream, Sink, Async, AsyncSink};
 pub use future_utils::{FutureExt, StreamExt, BoxFuture, BoxStream};
 pub use future_utils::{DropNotify, DropNotice, drop_notify};
+pub use future_utils::Timeout;
 
 pub use tokio_core::reactor::Handle;
 pub use tokio_core::net::{TcpStream, TcpListener, UdpSocket};
@@ -22,7 +23,7 @@ pub use log::LogLevel;
 pub use rand::Rng;
 pub use void::{Void, ResultVoidExt};
 
-pub use util::{Timeout, UtilFutureExt, HashSetExt};
+pub use util::HashSetExt;
 pub use protocol::Protocol;
 pub use mc::QueryPublicAddrError;
 

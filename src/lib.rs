@@ -24,6 +24,7 @@ extern crate log;
 #[macro_use]
 extern crate quick_error;
 extern crate igd;
+extern crate tokio_shared_udp_socket;
 
 mod priv_prelude;
 mod prelude;

@@ -4,12 +4,20 @@ use tcp::builder::TcpBuilderExt;
 use socket_addr::SocketAddrExt;
 use open_addr::{open_addr, BindPublicError};
 
+/// Extension methods for `TcpListener`.
 pub trait TcpListenerExt {
+    /// Bind reusably to the given address. Multiple sockets can be bound to the same local address
+    /// using this method.
     fn bind_reusable(addr: &SocketAddr, handle: &Handle) -> io::Result<TcpListener>;
+    /// Returns all local addresses of this socket, expanding an unspecified address (eg `0.0.0.0`)
+    /// into a vector of addresses, one for each network interface.
     fn expanded_local_addrs(&self) -> io::Result<Vec<SocketAddr>>;
 
     /// Returns a `TcpListener` listening on the given address along with a public `SocketAddr`
     /// that can be used to connect to the listener from across the internet.
+    ///
+    /// This method will try to open a port on the local router (if there is one) and return the
+    /// external address of the port if successful.
     fn bind_public(
         addr: &SocketAddr,
         handle: &Handle,

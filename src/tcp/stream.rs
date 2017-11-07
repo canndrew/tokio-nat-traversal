@@ -11,6 +11,7 @@ use rendezvous_addr::{rendezvous_addr, RendezvousAddrError};
 const RENDEZVOUS_TIMEOUT_SEC: u64 = 10;
 
 quick_error! {
+    /// Errors returned by `TcpStreamExt::connect_reusable`.
     #[derive(Debug)]
     pub enum ConnectReusableError {
         Bind(e: io::Error) {
@@ -26,6 +27,7 @@ quick_error! {
     }
 }
 
+/// Errors returned by `TcpStreamExt::rendezvous_connect`.
 #[derive(Debug)]
 pub enum TcpRendezvousConnectError<C>
 where
@@ -147,13 +149,21 @@ quick_error! {
     }
 }
 
+/// Extension methods for `TcpStream`.
 pub trait TcpStreamExt {
+    /// Connect to `addr` using a reusably-bound socket, bound to `bind_addr`. This can be used to
+    /// create multiple TCP connections with the same local address, or with the same local address
+    /// as a reusably-bound `TcpListener`.
     fn connect_reusable(
         bind_addr: &SocketAddr,
         addr: &SocketAddr,
         handle: &Handle,
     ) -> BoxFuture<TcpStream, ConnectReusableError>;
 
+    /// Perform a TCP rendezvous connect. Both peers must call this method simultaneously in order
+    /// to form one TCP connection, connected from both ends. `channel` must provide a channel
+    /// through which the two connecting peers can communicate with each other out-of-band while
+    /// negotiating the connection.
     fn rendezvous_connect<C>(channel: C, handle: &Handle) -> TcpRendezvousConnect<C>
     where
         C: Stream<Item=Bytes>,

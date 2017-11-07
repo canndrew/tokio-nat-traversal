@@ -38,31 +38,43 @@ impl Mc {
     }
 }
 
+/// Tell the library about a `TcpTraversalServer` than can be used to help use perform rendezvous
+/// connects and hole punching.
 pub fn add_tcp_traversal_server(addr: &SocketAddr) {
     let mut mc = unwrap!(MC.lock());
     mc.add_server(Protocol::Tcp, addr)
 }
 
+/// Tells the library to forget a `TcpTraversalServer` previously added with
+/// `add_tcp_traversal_server`.
 pub fn remove_tcp_traversal_server(addr: &SocketAddr) {
     let mut mc = unwrap!(MC.lock());
     mc.remove_server(Protocol::Tcp, addr)
 }
 
+/// Returns an iterator over all tcp traversal server addresses added with
+/// `add_tcp_traversal_server`.
 pub fn tcp_traversal_servers() -> Servers {
     let mut mc = unwrap!(MC.lock());
     mc.iter_servers(Protocol::Tcp)
 }
 
+/// Tell the library about a `UdpTraversalServer` than can be used to help use perform rendezvous
+/// connects and hole punching.
 pub fn add_udp_traversal_server(addr: &SocketAddr) {
     let mut mc = unwrap!(MC.lock());
     mc.add_server(Protocol::Udp, addr)
 }
 
+/// Tells the library to forget a `UdpTraversalServer` previously added with
+/// `add_udp_traversal_server`.
 pub fn remove_udp_traversal_server(addr: &SocketAddr) {
     let mut mc = unwrap!(MC.lock());
     mc.remove_server(Protocol::Udp, addr)
 }
 
+/// Returns an iterator over all udp traversal server addresses added with
+/// `add_tcp_traversal_server`.
 pub fn udp_traversal_servers() -> Servers {
     let mut mc = unwrap!(MC.lock());
     mc.iter_servers(Protocol::Udp)
@@ -135,7 +147,8 @@ pub fn tcp_query_public_addr(
         ConnectReusableError::Connect(e) => QueryPublicAddrError::Connect(e),
         ConnectReusableError::Bind(e) => QueryPublicAddrError::Bind(e),
     })
-    .with_timeout(&handle, Duration::from_secs(3), QueryPublicAddrError::ConnectTimeout)
+    .with_timeout(Duration::from_secs(3), &handle)
+    .and_then(|opt| opt.ok_or(QueryPublicAddrError::ConnectTimeout))
     .and_then(|stream| {
         tokio_io::io::write_all(stream, ECHO_REQ)
         .map(|(stream, _buf)| stream)
@@ -148,7 +161,8 @@ pub fn tcp_query_public_addr(
             bincode::deserialize(&data)
             .map_err(QueryPublicAddrError::Deserialize)
         })
-        .with_timeout(&handle, Duration::from_secs(2), QueryPublicAddrError::ResponseTimeout)
+        .with_timeout(Duration::from_secs(2), &handle)
+        .and_then(|opt| opt.ok_or(QueryPublicAddrError::ResponseTimeout))
     })
     .into_boxed()
 }
@@ -187,7 +201,8 @@ pub fn udp_query_public_addr(
                         }
                     })
                 })
-                .with_timeout(&handle, Duration::from_secs(2), QueryPublicAddrError::ResponseTimeout)
+                .with_timeout(Duration::from_secs(2), &handle)
+                .and_then(|opt| opt.ok_or(QueryPublicAddrError::ResponseTimeout))
             })
         })
     };
