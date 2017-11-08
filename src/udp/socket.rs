@@ -10,7 +10,6 @@ use filter_addrs::filter_addrs;
 use udp::msg::UdpRendezvousMsg;
 
 /// Errors returned by `UdpSocketExt::rendezvous_connect`.
-#[derive(Debug)]
 pub enum UdpRendezvousConnectError<C>
 where
     C: Stream<Item=Bytes>,
@@ -31,13 +30,41 @@ where
     AllAttemptsFailed(Vec<HolePunchError>, Option<BindPublicError>, Option<RendezvousAddrError>),
 }
 
+// Note: this has to be implemented manually or else it demands there be a Debug impl on C. This is
+// a bug in Rust.
+impl<C> fmt::Debug for UdpRendezvousConnectError<C>
+where
+    C: Stream<Item=Bytes>,
+    C: Sink<SinkItem=Bytes>,
+    <C as Stream>::Error: Error,
+    <C as Sink>::SinkError: Error,
+    C: 'static,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::UdpRendezvousConnectError::*;
+
+        match *self {
+            Bind(ref e) => f.debug_tuple("Bind").field(e).finish(),
+            Rebind(ref e) => f.debug_tuple("Rebind").field(e).finish(),
+            IfAddrs(ref e) => f.debug_tuple("IfAddrs").field(e).finish(),
+            ChannelClosed => write!(f, "ChannelClosed"),
+            ChannelRead(ref e) => f.debug_tuple("ChannelRead").field(e).finish(),
+            ChannelWrite(ref e) => f.debug_tuple("ChannelWrite").field(e).finish(),
+            DeserializeMsg(ref e) => f.debug_tuple("DeserializeMsg").field(e).finish(),
+            SocketWrite(ref e) => f.debug_tuple("SocketWrite").field(e).finish(),
+            SetTtl(ref e) => f.debug_tuple("SetTtl").field(e).finish(),
+            AllAttemptsFailed(ref v, ref b, ref r) => f.debug_tuple("AllAttemptsFailed").field(v).field(b).field(r).finish(),
+        }
+    }
+}
+
 impl<C> fmt::Display for UdpRendezvousConnectError<C>
 where
     C: Stream<Item=Bytes>,
     C: Sink<SinkItem=Bytes>,
     <C as Stream>::Error: Error,
     <C as Sink>::SinkError: Error,
-    C: fmt::Debug + 'static,
+    C: 'static,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.description())?;
@@ -68,7 +95,7 @@ where
     C: Sink<SinkItem=Bytes>,
     <C as Stream>::Error: Error,
     <C as Sink>::SinkError: Error,
-    C: fmt::Debug + 'static,
+    C: 'static,
 {
     fn cause(&self) -> Option<&Error> {
         use self::UdpRendezvousConnectError::*;
@@ -176,6 +203,7 @@ impl UdpSocketExt for UdpSocket {
         let handle1 = handle.clone();
         let (our_pk, _sk) = crypto::box_::gen_keypair();
 
+        trace!("starting rendezvous connect");
         UdpSocket::bind_public(&addr!("0.0.0.0:0"), handle)
         .then(move |res| match res {
             Ok((socket, public_addr)) => {
@@ -186,6 +214,7 @@ impl UdpSocketExt for UdpSocket {
                         .map_err(UdpRendezvousConnectError::IfAddrs)?
                     };
                     our_addrs.push(public_addr);
+                    trace!("public bind successful, our open addresses are: {:#?}", our_addrs);
                     let our_addrs = our_addrs.into_iter().collect::<HashSet<_>>();
                     let msg = UdpRendezvousMsg::Init {
                         enc_pk: our_pk,
@@ -193,9 +222,11 @@ impl UdpSocketExt for UdpSocket {
                         rendezvous_addrs: Vec::new(),
                     };
 
+                    trace!("exchanging rendezvous info with peer");
                     Ok({
                         exchange_msgs(channel, msg)
                         .map(move |their_msg| {
+                            trace!("received rendezvous info");
                             let UdpRendezvousMsg::Init {
                                 enc_pk: their_pk,
                                 open_addrs: their_open_addrs,
@@ -214,6 +245,8 @@ impl UdpSocketExt for UdpSocket {
                 future::result(try()).flatten().into_boxed()
             },
             Err(bind_public_error) => {
+                trace!("public bind failed: {}", bind_public_error);
+                trace!("generating rendezvous sockets");
                 let try = || {
                     let listen_socket = {
                         UdpSocket::bind_reusable(&addr!("0.0.0.0:0"), &handle0)
@@ -250,9 +283,12 @@ impl UdpSocketExt for UdpSocket {
                                         match res {
                                             Ok(addr) => {
                                                 sockets.push((socket, addr));
+                                                trace!("generated {} rendezvous sockets", sockets.len());
                                                 Ok(Loop::Continue(sockets))
                                             },
                                             Err(err) => {
+                                                trace!("error generating rendezvous socket: {}", err);
+                                                trace!("stopping after generating {} sockets", sockets.len());
                                                 Ok(Loop::Break((sockets, Some(err))))
                                             },
                                         }
@@ -263,11 +299,13 @@ impl UdpSocketExt for UdpSocket {
                         })
                         .and_then(move |(sockets, rendezvous_error_opt)| {
                             let (sockets, rendezvous_addrs) = sockets.into_iter().unzip::<_, _, Vec<_>, _>();
+                            trace!("our rendezvous addresses are: {:#?}", rendezvous_addrs);
                             let msg = UdpRendezvousMsg::Init {
                                 enc_pk: our_pk,
                                 open_addrs: our_addrs.clone(),
                                 rendezvous_addrs: rendezvous_addrs,
                             };
+                            trace!("exchanging rendezvous info with peer");
                             exchange_msgs(channel, msg)
                             .and_then(move |their_msg| {
                                 let UdpRendezvousMsg::Init {
@@ -276,6 +314,7 @@ impl UdpSocketExt for UdpSocket {
                                     rendezvous_addrs: their_rendezvous_addrs,
                                 } = their_msg;
 
+                                trace!("their rendezvous addresses are: {:#?}", their_rendezvous_addrs);
                                 let mut punchers = FuturesUnordered::new();
                                 let iter = {
                                     sockets
@@ -295,6 +334,7 @@ impl UdpSocketExt for UdpSocket {
 
                                 let their_open_addrs = filter_addrs(&our_addrs, &their_open_addrs);
 
+                                trace!("their open addresses are: {:#?}", their_open_addrs);
                                 let incoming = {
                                     open_connect(&handle2, listen_socket, their_open_addrs, false)
                                     .select(punchers)
@@ -329,7 +369,7 @@ impl UdpSocketExt for UdpSocket {
                 incoming
                 .map(|(socket, chosen)| {
                     if chosen {
-                        return got_chosen(socket)
+                        return future::ok(got_chosen(socket)).into_boxed()
                     }
                     take_chosen(socket)
                 })
@@ -408,6 +448,8 @@ fn send_from_syn(
     let handle = handle.clone();
     let send_msg = unwrap!(bincode::serialize(&HolePunchMsg::Syn, bincode::Infinite));
 
+    trace!("sending syn to {}", socket.remote_addr());
+
     socket
     .send(Bytes::from(send_msg))
     .map_err(HolePunchError::SendMessage)
@@ -415,8 +457,8 @@ fn send_from_syn(
         let try = || {
             let syns_acks_sent = syns_acks_sent + 1;
             if syns_acks_sent % 5 == 0 && ttl_increment != 0 {
-                let ttl = socket.get_ref().ttl()?;
-                socket.get_ref().set_ttl(ttl + ttl_increment)?;
+                let ttl = socket.ttl()?;
+                socket.set_ttl(ttl + ttl_increment)?;
             }
             Ok(recv_from_syn(&handle, socket, next_timeout, syns_acks_sent, ttl_increment))
         };
@@ -475,6 +517,8 @@ fn send_from_ack(
     let handle = handle.clone();
     let send_msg = unwrap!(bincode::serialize(&HolePunchMsg::Ack, bincode::Infinite));
 
+    trace!("sending ack to {}", socket.remote_addr());
+
     socket
     .send(Bytes::from(send_msg))
     .map_err(HolePunchError::SendMessage)
@@ -482,8 +526,8 @@ fn send_from_ack(
         let try = || {
             let syns_acks_sent = syns_acks_sent + 1;
             if syns_acks_sent % 5 == 0 && ttl_increment != 0 {
-                let ttl = socket.get_ref().ttl()?;
-                socket.get_ref().set_ttl(ttl + ttl_increment)?;
+                let ttl = socket.ttl()?;
+                socket.set_ttl(ttl + ttl_increment)?;
             }
             Ok(recv_from_ack(&handle, socket, next_timeout, syns_acks_sent, ttl_increment))
         };
@@ -532,6 +576,8 @@ fn send_from_ack_ack(handle: &Handle, socket: WithAddress, next_timeout: Instant
     let handle = handle.clone();
     let send_msg = unwrap!(bincode::serialize(&HolePunchMsg::AckAck, bincode::Infinite));
 
+    trace!("sending ack-ack #{} to {}", ack_acks_sent, socket.remote_addr());
+
     socket
     .send(Bytes::from(send_msg))
     .map_err(HolePunchError::SendMessage)
@@ -578,6 +624,8 @@ fn send_final_ack_acks(handle: &Handle, socket: WithAddress, next_timeout: Insta
         return future::ok((socket, false)).into_boxed();
     }
 
+    trace!("sending final ack-ack #{} to {}", ack_acks_sent, socket.remote_addr());
+
     Timeout::new_at(next_timeout, &handle)
     .infallible()
     .and_then(move |()| {
@@ -602,12 +650,17 @@ fn open_connect(
 
     let handle = handle.clone();
     stream::poll_fn(move || {
+        trace!("open_connect polling shared socket on {:?}", shared.local_addr());
+
         loop {
             match shared.poll() {
                 Ok(Async::Ready(Some(with_addr))) => {
                     punchers.push(send_from_ack(&handle, with_addr, Instant::now() + Duration::from_millis(200), 0, 0));
                 },
-                Ok(Async::Ready(None)) => break,
+                Ok(Async::Ready(None)) => {
+                    trace!("shared socket has been stolen");
+                    break
+                },
                 Ok(Async::NotReady) => break,
                 Err(e) => {
                     error!("error reading from shared socket: {}", e);
@@ -648,13 +701,11 @@ where
 {
     if chooses_sent >= 5 {
         let addr = socket.remote_addr();
-        return {
-            unwrap!(socket.try_take().map_err(|_| "another task tried to take the socket?"))
-            .map(move |socket| (socket, addr))
-            .infallible()
-            .into_boxed()
-        };
+        let socket = unwrap!(socket.steal());
+        return future::ok((socket, addr)).into_boxed();
     }
+
+    trace!("choosing {}, sending message #{}", socket.remote_addr(), chooses_sent);
 
     let handle = handle.clone();
     let msg = unwrap!(bincode::serialize(&HolePunchMsg::Choose, bincode::Infinite));
@@ -688,7 +739,7 @@ fn take_chosen(socket: WithAddress) -> BoxFuture<Option<(UdpSocket, SocketAddr)>
                         take_chosen(socket)
                     },
                     Ok(HolePunchMsg::Choose) => {
-                        got_chosen(socket)
+                        future::ok(got_chosen(socket)).into_boxed()
                     },
                     Ok(..) => take_chosen(socket)
                 }
@@ -699,17 +750,12 @@ fn take_chosen(socket: WithAddress) -> BoxFuture<Option<(UdpSocket, SocketAddr)>
 }
 
 // this socket got chosen by the remote peer. Return success with it.
-fn got_chosen(socket: WithAddress) -> BoxFuture<Option<(UdpSocket, SocketAddr)>, HolePunchError> {
+fn got_chosen(socket: WithAddress) -> Option<(UdpSocket, SocketAddr)> {
+    trace!("remote peer from {} chose us", socket.remote_addr());
+
     let addr = socket.remote_addr();
-    match socket.try_take() {
-        Ok(try_take) => {
-            try_take
-            .infallible()
-            .map(move |socket| Some((socket, addr)))
-            .into_boxed()
-        }
-        Err(..) => future::ok(None).into_boxed()
-    }
+    let socket_opt = socket.steal();
+    socket_opt.map(|socket| (socket, addr))
 }
 
 // exchange rendezvous messages along the channel
@@ -743,5 +789,58 @@ enum HolePunchMsg {
     Ack,
     AckAck,
     Choose,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use env_logger;
+    use tokio_core::reactor::Core;
+    use tokio_io;
+
+    use util;
+
+    #[test]
+    fn udp_rendezvous_connect_over_loopback() {
+        let _ = env_logger::init();
+
+        let (ch0, ch1) = util::two_way_channel();
+
+        let mut core = unwrap!(Core::new());
+        let handle = core.handle();
+
+        let result = core.run({
+            let f0 = {
+                UdpSocket::rendezvous_connect(ch0, &handle)
+                .map_err(|e| panic!("connect failed: {:?}", e))
+                .and_then(|(socket, addr)| {
+                    trace!("rendezvous connect successful! connected to {}", addr);
+                    let socket = SharedUdpSocket::share(socket).with_address(addr);
+                    socket.send(Bytes::from(&b"hello"[..]))
+                })
+                .map_err(|e| panic!("writing failed: {:?}", e))
+                .map(|_| ())
+            };
+            let f1 = {
+                UdpSocket::rendezvous_connect(ch1, &handle)
+                .map_err(|e| panic!("connect failed: {:?}", e))
+                .and_then(|(socket, addr)| {
+                    trace!("rendezvous connect successful! connected to {}", addr);
+                    let socket = SharedUdpSocket::share(socket).with_address(addr);
+                    socket
+                    .filter_map(|data| {
+                        if &data == &b"hello"[..] { Some(()) } else { None }
+                    })
+                    .next_or_else(|| panic!("Didn't receive a message"))
+                })
+                .map_err(|e| panic!("reading failed: {:?}", e))
+                .map(|((), _socket)| ())
+            };
+
+            f0.join(f1).map(|((), ())| ())
+        });
+        unwrap!(result)
+    }
 }
 

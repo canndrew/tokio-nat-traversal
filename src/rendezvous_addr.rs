@@ -43,7 +43,7 @@ quick_error! {
                     Got {} errors: {:#?}", v.len(), v)
         }
         LackOfServers {
-            description("more traversal servers needed to perform TCP hole-punching")
+            description("more traversal servers needed to perform hole-punching")
         }
     }
 }

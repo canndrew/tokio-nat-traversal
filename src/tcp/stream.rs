@@ -397,7 +397,7 @@ mod test {
 
             f0.join(f1).map(|((), ())| ())
         });
-        unwrap!(result);
+        unwrap!(result)
     }
 }
 
