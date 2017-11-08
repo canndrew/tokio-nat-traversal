@@ -4,7 +4,7 @@ use priv_prelude::*;
 pub enum UdpRendezvousMsg {
     Init {
         enc_pk: crypto::box_::PublicKey,
-        open_addrs: Vec<SocketAddr>,
+        open_addrs: HashSet<SocketAddr>,
         rendezvous_addrs: Vec<SocketAddr>,
     },
 }

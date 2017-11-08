@@ -20,6 +20,7 @@ extern crate serde;
 extern crate serde_derive;
 extern crate env_logger;
 extern crate void;
+#[macro_use]
 extern crate log;
 #[macro_use]
 extern crate quick_error;
