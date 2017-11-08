@@ -1,5 +1,5 @@
 use futures::sync::oneshot;
-use igd::{self, AddAnyPortError, PortMappingProtocol, SearchError};
+use igd::{self, AddAnyPortError, PortMappingProtocol, SearchError, RequestError};
 use priv_prelude::*;
 use get_if_addrs::{self, IfAddr};
 
@@ -65,10 +65,18 @@ impl Gateway {
         let gateway = self.inner.clone();
         let description = String::from(description);
         let (tx, rx) = oneshot::channel();
-        let _ = thread::spawn(move || {
-            let res = gateway.get_any_address(protocol, local_addr, lease_duration, &description);
-            tx.send(res)
-        });
+        match local_addr_to_gateway(*gateway.addr.ip()) {
+            Ok(ipv4) => {
+                let _ = thread::spawn(move || {
+                    let local_addr = SocketAddrV4::new(ipv4, local_addr.port());
+                    let res = gateway.get_any_address(protocol, local_addr, lease_duration, &description);
+                    tx.send(res)
+                });
+            },
+            Err(e) => {
+                let _ = tx.send(Err(AddAnyPortError::RequestError(RequestError::IoError(e))));
+            },
+        };
         GetAnyAddress { rx: rx }
     }
 }
