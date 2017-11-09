@@ -90,6 +90,7 @@ pub fn open_addr(
     };
 
     if let Some(addr) = addrs.into_iter().find(|addr| IpAddrExt::is_global(&addr.ip())) {
+        trace!("we have a global local address: {}", addr);
         return future::ok(addr).into_boxed();
     }
 
@@ -131,10 +132,15 @@ impl Future for OpenAddr {
 
     fn poll(&mut self) -> Result<Async<SocketAddr>, OpenAddrError> {
         loop {
+            trace!("in open_addr loop");
             loop {
                 match self.active_queries.poll() {
-                    Err(e) => self.errors.push(e),
+                    Err(e) => {
+                        trace!("query returned error: {}", e);
+                        self.errors.push(e);
+                    },
                     Ok(Async::Ready(Some(addr))) => {
+                        trace!("query returned address: {}", addr);
                         if let Some(known_addr) = self.known_addr_opt {
                             if known_addr == addr {
                                 return Ok(Async::Ready(addr));
@@ -163,8 +169,10 @@ impl Future for OpenAddr {
                 return Ok(Async::NotReady);
             }
 
+            trace!("polling for new servers");
             match self.traversal_servers.poll().void_unwrap() {
                 Async::Ready(Some(server_addr)) => {
+                    trace!("new server to query: {}", server_addr);
                     let active_query = mc::query_public_addr(
                         self.protocol,
                         &self.bind_addr,
@@ -175,20 +183,26 @@ impl Future for OpenAddr {
                     self.more_servers_timeout = None;
                 },
                 Async::Ready(None) => {
+                    trace!("out of servers");
                     if self.active_queries.len() == 0 {
                         if let Some(known_addr) = self.known_addr_opt {
+                            trace!("returning unverified (!) address: {}", known_addr);
                             return Ok(Async::Ready(known_addr));
                         }
+                        trace!("giving up");
                         return Err(OpenAddrError {
                             igd_err: self.igd_err.take(),
                             kind: OpenAddrErrorKind::LackOfServers,
                         });
                     }
+                    trace!("waiting for {} more queries to finish", self.active_queries.len());
                 },
                 Async::NotReady => {
                     if self.active_queries.len() == 0 {
+                        trace!("waiting for more servers...");
                         loop {
                             if let Some(ref mut timeout) = self.more_servers_timeout {
+                                trace!("... timed out");
                                 if let Async::Ready(()) = timeout.poll().void_unwrap() {
                                     if let Some(known_addr) = self.known_addr_opt {
                                         return Ok(Async::Ready(known_addr));

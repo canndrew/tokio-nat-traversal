@@ -153,7 +153,10 @@ pub fn get_any_address(
                 };
                 gateway.get_any_address(protocol, socket_addr_v4, 0, "tokio-nat-traversal")
                 .map_err(GetAnyAddressError::RequestPort)
-                .map(SocketAddr::V4)
+                .map(|addr| {
+                    trace!("igd returned address {}", addr);
+                    SocketAddr::V4(addr)
+                })
             })
         })
     };

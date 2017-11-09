@@ -29,6 +29,7 @@ impl ServerSet {
         let (tx, rx) = unbounded();
         self.iterators.push(tx);
         let servers = self.servers.clone();
+        trace!("iterating {} servers", servers.len());
         Servers {
             servers: servers,
             modifications: rx,
