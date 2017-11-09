@@ -5,6 +5,7 @@ pub use tcp::builder::TcpBuilderExt;
 pub use tcp::listener::TcpListenerExt;
 pub use tcp::rendezvous_server::TcpRendezvousServer;
 pub use udp::socket::UdpSocketExt;
+pub use udp::rendezvous_server::UdpRendezvousServer;
 
 pub use mc::{add_tcp_traversal_server, remove_tcp_traversal_server, tcp_traversal_servers};
 pub use mc::{add_udp_traversal_server, remove_udp_traversal_server, udp_traversal_servers};
