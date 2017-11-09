@@ -71,7 +71,7 @@ const USAGE: &str = "
 tcp_rendezvous_connect
 
 Usage:
-    tcp_rendezvous_connect --relay=<address> [--disable-igd] <message>
+    tcp_rendezvous_connect --relay=<address> [--disable-igd] [--traversal-server=<address>] <message>
     tcp_rendezvous_connect (-h | --help)
 ";
 
@@ -79,6 +79,7 @@ Usage:
 struct Args {
     flag_relay: SocketAddr,
     flag_disable_igd: bool,
+    flag_traversal_server: Option<SocketAddr>,
     arg_message: String,
 }
 
@@ -96,6 +97,10 @@ fn main() {
 
     if args.flag_disable_igd {
         tokio_nat_traversal::disable_igd();
+    }
+
+    if let Some(server) = args.flag_traversal_server {
+        tokio_nat_traversal::add_tcp_traversal_server(&server);
     }
 
     let relay_addr = args.flag_relay;

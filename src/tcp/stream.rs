@@ -211,6 +211,7 @@ impl TcpStreamExt for TcpStream {
         let (pk, _sk) = crypto::box_::gen_keypair();
 
         let try = || {
+            trace!("starting tcp rendezvous connect");
             let listener = {
                 TcpListener::bind_reusable(&addr!("0.0.0.0:0"), &handle)
                 .map_err(TcpRendezvousConnectError::Bind)
@@ -229,12 +230,14 @@ impl TcpStreamExt for TcpStream {
             let our_addrs = addrs.iter().cloned().collect();
 
             Ok({
+                trace!("getting rendezvous address");
                 rendezvous_addr(Protocol::Tcp, &bind_addr, &handle)
                 .then(|res| match res {
                     Ok(addr) => Ok((Some(addr), None)),
                     Err(e) => Ok((None, Some(e))),
                 })
                 .and_then(move |(rendezvous_addr_opt, map_error)| {
+                    trace!("got rendezvous address: {:?}", rendezvous_addr_opt);
                     let msg = TcpRendezvousMsg::Init {
                         enc_pk: pk,
                         open_addrs: addrs,
@@ -243,6 +246,7 @@ impl TcpStreamExt for TcpStream {
                     let msg = unwrap!(bincode::serialize(&msg, Infinite));
                     let msg = Bytes::from(msg);
 
+                    trace!("exchanging rendezvous info with peer");
                     channel.send(msg)
                     .map_err(TcpRendezvousConnectError::ChannelWrite)
                     .and_then(|channel| {
