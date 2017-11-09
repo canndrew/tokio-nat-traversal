@@ -411,7 +411,7 @@ pub fn bind_public_with_addr(
             .map_err(BindPublicError::Bind)
         }?;
         Ok({
-            open_addr(Protocol::Tcp, &bind_addr, &handle)
+            open_addr(Protocol::Udp, &bind_addr, &handle)
             .map_err(BindPublicError::OpenAddr)
             .map(move |public_addr| {
                 (socket, bind_addr, public_addr)
