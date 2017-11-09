@@ -1,7 +1,7 @@
 use futures::sync::oneshot;
 use igd::{self, AddAnyPortError, PortMappingProtocol, SearchError, RequestError};
 use priv_prelude::*;
-use get_if_addrs::{self, IfAddr};
+use get_if_addrs::{self, IfAddr, Interface};
 
 use std::thread;
 
@@ -94,7 +94,7 @@ fn add_port_mapping(
     description: String,
 ) -> Result<SocketAddrV4, AddAnyPortError> {
     if local_addr.ip().is_unspecified() {
-        match local_addr_to_gateway(*gateway.addr.ip()) {
+        match discover_local_addr_to_gateway(*gateway.addr.ip()) {
             Ok(ipv4) => {
                 let local_addr = SocketAddrV4::new(ipv4, local_addr.port());
                 gateway.get_any_address(protocol, local_addr, lease_duration, &description)
@@ -157,17 +157,24 @@ pub fn get_any_address(
 ///
 /// Local IP address that is on the same subnet as gateway address. Returned address is always
 /// IPv4 because gateway always has IPv4 address as well.
-fn local_addr_to_gateway(gateway_addr: Ipv4Addr) -> io::Result<Ipv4Addr> {
+fn discover_local_addr_to_gateway(gateway_addr: Ipv4Addr) -> io::Result<Ipv4Addr> {
     let ifs = get_if_addrs::get_if_addrs()?;
-    for interface in ifs {
+    local_addr_to_gateway(ifs, gateway_addr)
+        .map_or(
+            Err(io::Error::new(io::ErrorKind::NotFound, "No local addresses to gateway")),
+            |addr| Ok(addr),
+        )
+}
+
+fn local_addr_to_gateway(interfaces: Vec<Interface>, gateway_addr: Ipv4Addr) -> Option<Ipv4Addr> {
+    for interface in interfaces {
         if let IfAddr::V4(addr) = interface.addr {
             if in_same_subnet(addr.ip, gateway_addr, addr.netmask) {
-                return Ok(addr.ip);
+                return Some(addr.ip);
             }
         }
     }
-
-    Err(io::Error::new(io::ErrorKind::NotFound, "No local addresses to gateway"))
+    None
 }
 
 /// # Returns
