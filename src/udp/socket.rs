@@ -24,6 +24,7 @@ where
     ChannelClosed,
     ChannelRead(<C as Stream>::Error),
     ChannelWrite(<C as Sink>::SinkError),
+    ChannelTimeout,
     DeserializeMsg(bincode::Error),
     SocketWrite(io::Error),
     SetTtl(io::Error),
@@ -50,6 +51,7 @@ where
             ChannelClosed => write!(f, "ChannelClosed"),
             ChannelRead(ref e) => f.debug_tuple("ChannelRead").field(e).finish(),
             ChannelWrite(ref e) => f.debug_tuple("ChannelWrite").field(e).finish(),
+            ChannelTimeout => write!(f, "ChannelTimeout"),
             DeserializeMsg(ref e) => f.debug_tuple("DeserializeMsg").field(e).finish(),
             SocketWrite(ref e) => f.debug_tuple("SocketWrite").field(e).finish(),
             SetTtl(ref e) => f.debug_tuple("SetTtl").field(e).finish(),
@@ -105,6 +107,7 @@ where
             ChannelClosed => None,
             ChannelRead(ref e) => Some(e),
             ChannelWrite(ref e) => Some(e),
+            ChannelTimeout => None,
             DeserializeMsg(ref e) => Some(e),
             AllAttemptsFailed(..) => None,
         }
@@ -120,6 +123,7 @@ where
             ChannelClosed => "rendezvous channel closed unexpectedly",
             ChannelRead(..) => "error reading from rendezvous channel",
             ChannelWrite(..) => "error writing to rendezvous channel",
+            ChannelTimeout => "timed out waiting for response on rendezvous channel",
             DeserializeMsg(..) => "error deserializing message from rendezvous channel",
             SocketWrite(..) => "error writing to socket",
             SetTtl(..) => "error setting ttl value on socket",
@@ -352,11 +356,13 @@ impl UdpSocketExt for UdpSocket {
         })
         .and_then(move |(their_pk, incoming, bind_public_error_opt, rendezvous_error_opt)| {
             if our_pk > their_pk {
+                trace!("we are choosing the connection");
                 incoming
                 .and_then(|(socket, chosen)| {
                     if chosen {
                         return Err(HolePunchError::UnexpectedMessage);
                     }
+                    trace!("successful connection found!");
                     Ok(socket)
                 })
                 .first_ok()
@@ -368,6 +374,7 @@ impl UdpSocketExt for UdpSocket {
                 })
                 .into_boxed()
             } else {
+                trace!("they are choosing the connection");
                 incoming
                 .map(|(socket, chosen)| {
                     if chosen {
@@ -657,13 +664,17 @@ fn open_connect(
         loop {
             match shared.poll() {
                 Ok(Async::Ready(Some(with_addr))) => {
+                    trace!("received packet from new address {}. starting punching", with_addr.remote_addr());
                     punchers.push(send_from_ack(&handle, with_addr, Instant::now() + Duration::from_millis(200), 0, 0));
                 },
                 Ok(Async::Ready(None)) => {
                     trace!("shared socket has been stolen");
                     break
                 },
-                Ok(Async::NotReady) => break,
+                Ok(Async::NotReady) => {
+                    trace!("nothing has arrived on the socket (yet)");
+                    break
+                },
                 Err(e) => {
                     error!("error reading from shared socket: {}", e);
                     break
@@ -673,16 +684,22 @@ fn open_connect(
 
         match punchers.poll()? {
             Async::Ready(Some(x)) => {
+                trace!("puncher returned success!");
                 Ok(Async::Ready(Some(x)))
             }
             Async::Ready(None) => {
                 if we_are_open {
+                    trace!("open_connect waiting for more connections");
                     Ok(Async::NotReady)
                 } else {
+                    trace!("open_connect giving up");
                     Ok(Async::Ready(None))
                 }
             },
-            Async::NotReady => Ok(Async::NotReady),
+            Async::NotReady => {
+                trace!("no punchers are ready yet");
+                Ok(Async::NotReady)
+            },
         }
     })
     .into_boxed()
@@ -782,6 +799,8 @@ where
             .map_err(UdpRendezvousConnectError::DeserializeMsg)
         })
     })
+    //.with_timeout(Duration::from_secs(20))
+    //.and_then(|msg_opt| msg_opt.ok().unwrap_or(UdpRendezvousConnectError::ChannelTimeout))
     .into_boxed()
 }
 
