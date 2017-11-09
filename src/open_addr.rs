@@ -22,15 +22,17 @@ quick_error! {
 
 #[derive(Debug)]
 pub struct OpenAddrError {
-    igd_err: GetAnyAddressError,
+    igd_err: Option<GetAnyAddressError>,
     kind: OpenAddrErrorKind,
 }
 
 impl fmt::Display for OpenAddrError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "IGD returned error: {}. \
-                   Hole punching failed with error: {}",
-                   self.igd_err, self.kind)
+        if let Some(ref e) = self.igd_err {
+            write!(f, "IGD returned error: {}. ", e)?;
+        }
+        write!(f, "Hole punching failed with error: {}", self.kind)?;
+        Ok(())
     }
 }
 
@@ -60,6 +62,11 @@ quick_error! {
         LackOfServers {
             description("lack of traversal servers necessary to map port")
         }
+        IfAddrs(e: io::Error) {
+            description("error getting interface addresses")
+            display("error getting interface addresses: {}", e)
+            cause(e)
+        }
     }
 }
 
@@ -68,8 +75,27 @@ pub fn open_addr(
     bind_addr: &SocketAddr,
     handle: &Handle,
 ) -> BoxFuture<SocketAddr, OpenAddrError> {
+    let addrs_res = {
+        bind_addr
+        .expand_local_unspecified()
+        .map_err(|e| OpenAddrError {
+            igd_err: None,
+            kind: OpenAddrErrorKind::IfAddrs(e),
+        })
+    };
+
+    let addrs = match addrs_res {
+        Ok(addrs) => addrs,
+        Err(e) => return future::err(e).into_boxed(),
+    };
+
+    if let Some(addr) = addrs.into_iter().find(|addr| IpAddrExt::is_global(&addr.ip())) {
+        return future::ok(addr).into_boxed();
+    }
+
     let bind_addr = *bind_addr;
     let handle = handle.clone();
+
     igd_async::get_any_address(protocol, bind_addr)
     .or_else(move |igd_err| {
         OpenAddr {
@@ -86,7 +112,6 @@ pub fn open_addr(
     })
     .into_boxed()
 }
-    
 
 struct OpenAddr {
     protocol: Protocol,
@@ -115,7 +140,7 @@ impl Future for OpenAddr {
                                 return Ok(Async::Ready(addr));
                             } else {
                                 return Err(OpenAddrError {
-                                    igd_err: unwrap!(self.igd_err.take()),
+                                    igd_err: self.igd_err.take(),
                                     kind: OpenAddrErrorKind::InconsistentAddrs(known_addr, addr),
                                 });
                             }
@@ -129,7 +154,7 @@ impl Future for OpenAddr {
             if self.errors.len() >= 5 {
                 let errors = mem::replace(&mut self.errors, Vec::new());
                 return Err(OpenAddrError {
-                    igd_err: unwrap!(self.igd_err.take()),
+                    igd_err: self.igd_err.take(),
                     kind: OpenAddrErrorKind::HitErrorLimit(errors),
                 });
             }
@@ -155,7 +180,7 @@ impl Future for OpenAddr {
                             return Ok(Async::Ready(known_addr));
                         }
                         return Err(OpenAddrError {
-                            igd_err: unwrap!(self.igd_err.take()),
+                            igd_err: self.igd_err.take(),
                             kind: OpenAddrErrorKind::LackOfServers,
                         });
                     }
@@ -169,7 +194,7 @@ impl Future for OpenAddr {
                                         return Ok(Async::Ready(known_addr));
                                     }
                                     return Err(OpenAddrError {
-                                        igd_err: unwrap!(self.igd_err.take()),
+                                        igd_err: self.igd_err.take(),
                                         kind: OpenAddrErrorKind::LackOfServers,
                                     });
                                 }
