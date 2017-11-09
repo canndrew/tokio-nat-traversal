@@ -97,6 +97,9 @@ quick_error! {
             display("error opening port on UPnP router: {}", e)
             cause(e)
         }
+        Disabled {
+            description("IGD has been disabled in the library")
+        }
     }
 }
 
@@ -104,6 +107,10 @@ pub fn get_any_address(
     protocol: Protocol,
     local_addr: SocketAddr,
 ) -> BoxFuture<SocketAddr, GetAnyAddressError> {
+    if !is_igd_enabled() {
+        return future::err(GetAnyAddressError::Disabled).into_boxed();
+    }
+
     let try = || {
         let socket_addr_v4 = match local_addr {
             SocketAddr::V4(socket_addr_v4) => socket_addr_v4,

@@ -9,4 +9,5 @@ pub use udp::rendezvous_server::UdpRendezvousServer;
 
 pub use mc::{add_tcp_traversal_server, remove_tcp_traversal_server, tcp_traversal_servers};
 pub use mc::{add_udp_traversal_server, remove_udp_traversal_server, udp_traversal_servers};
+pub use mc::{enable_igd, disable_igd, is_igd_enabled};
 

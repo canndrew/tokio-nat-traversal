@@ -15,6 +15,7 @@ lazy_static! {
 struct Mc {
     tcp_server_set: ServerSet,
     udp_server_set: ServerSet,
+    igd_disabled: bool,
 }
 
 impl Mc {
@@ -207,5 +208,20 @@ pub fn udp_query_public_addr(
         })
     };
     future::result(try()).flatten().into_boxed()
+}
+
+pub fn is_igd_enabled() -> bool {
+    let mc = unwrap!(MC.lock());
+    !mc.igd_disabled
+}
+
+pub fn disable_igd() {
+    let mut mc = unwrap!(MC.lock());
+    mc.igd_disabled = true;
+}
+
+pub fn enable_igd() {
+    let mut mc = unwrap!(MC.lock());
+    mc.igd_disabled = false;
 }
 

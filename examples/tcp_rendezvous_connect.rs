@@ -20,6 +20,11 @@ extern crate futures;
 extern crate future_utils;
 extern crate bytes;
 extern crate void;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde;
+extern crate docopt;
+extern crate env_logger;
 
 use std::{env, fmt};
 use std::net::{SocketAddr, Shutdown};
@@ -28,6 +33,7 @@ use tokio_core::net::TcpStream;
 use futures::{Future, Stream, Sink, Async, AsyncSink};
 use tokio_io::codec::length_delimited::Framed;
 use tokio_nat_traversal::TcpStreamExt;
+use docopt::Docopt;
 use void::ResultVoidExt;
 
 // TODO: figure out how to not need this.
@@ -61,34 +67,39 @@ impl<S: Sink> Sink for DummyDebug<S> {
     }
 }
 
+const USAGE: &str = "
+tcp_rendezvous_connect
+
+Usage:
+    tcp_rendezvous_connect --relay=<address> [--disable-igd] <message>
+    tcp_rendezvous_connect (-h | --help)
+";
+
+#[derive(Debug, Deserialize)]
+struct Args {
+    flag_relay: SocketAddr,
+    flag_disable_igd: bool,
+    arg_message: String,
+}
+
 fn main() {
-    let mut args = env::args().skip(1);
+    unwrap!(env_logger::init());
 
-    let relay_addr_str = match args.next() {
-        Some(relay_addr_str) => relay_addr_str,
-        None => {
-            println!("missing relay server address!");
-            println!("Usage: tcp_rendezvous_connect <relay server addr> <message to send>");
-            return;
-        },
+    let args = env::args().collect::<Vec<_>>();
+    println!("args == {:?}", args);
+
+    let args: Args = {
+        Docopt::new(USAGE)
+        .and_then(|d| d.deserialize())
+        .unwrap_or_else(|e| e.exit())
     };
 
-    let relay_addr = match SocketAddr::from_str(&relay_addr_str) {
-        Ok(relay_addr) => relay_addr,
-        Err(e) => {
-            println!("error parsing relay server address: {}", e);
-            println!("Usage: tcp_rendezvous_connect <relay server addr> <message to send>");
-            return;
-        },
-    };
+    if args.flag_disable_igd {
+        tokio_nat_traversal::disable_igd();
+    }
 
-    let message = args.next().unwrap_or(String::new());
-    let message = args.fold(message, |mut message, arg| {
-        message.push(' ');
-        message.push_str(&arg);
-        message
-    });
-    let message: Vec<u8> = message.into();
+    let relay_addr = args.flag_relay;
+    let message: Vec<u8> = args.arg_message.into();
 
     let mut core = unwrap!(tokio_core::reactor::Core::new());
     let handle = core.handle();
