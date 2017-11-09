@@ -68,9 +68,14 @@ pub fn rendezvous_addr(
         let mut igd_error = Some(igd_error);
         future::poll_fn(move || {
             loop {
+                trace!("in rendezvous_addr loop");
                 match active_queries.poll() {
-                    Err(e) => errors.push(e),
+                    Err(e) => {
+                        trace!("query returned error: {}", e);
+                        errors.push(e);
+                    },
                     Ok(Async::Ready(Some(addr))) => {
+                        trace!("query returned address: {}", addr);
                         let ip = addr.ip();
                         if IpAddrExt::is_global(&ip) {
                             if let Some(known_ip) = known_ip_opt {
@@ -124,11 +129,13 @@ pub fn rendezvous_addr(
 
                 match servers.poll().void_unwrap() {
                     Async::Ready(Some(server_addr)) => {
+                        trace!("got a new server to try: {}", server_addr);
                         let active_query = mc::query_public_addr(protocol, &bind_addr, &server_addr, &handle);
                         active_queries.push(active_query);
                         more_servers_timeout = None;
                     },
                     Async::Ready(None) => {
+                        trace!("run out of rendezvous servers with {} active queries, {} ports", active_queries.len(), ports.len());
                         if active_queries.len() == 0 {
                             if ports.len() == 1 {
                                 let ip = unwrap!(known_ip_opt);
@@ -141,10 +148,13 @@ pub fn rendezvous_addr(
                         }
                     },
                     Async::NotReady => {
+                        trace!("no new rendezvous servers ready");
                         if active_queries.len() == 0 {
+                            trace!("waiting for more rendezvous servers...");
                             loop {
                                 if let Some(ref mut timeout) = more_servers_timeout {
                                     if let Async::Ready(()) = timeout.poll().void_unwrap() {
+                                        trace!("... timed out");
                                         if ports.len() == 1 {
                                             let ip = unwrap!(known_ip_opt);
                                             return Ok(Async::Ready(SocketAddr::new(ip, ports[0])));

@@ -188,11 +188,13 @@ pub fn udp_query_public_addr(
             .map_err(QueryPublicAddrError::SendRequest)
             .and_then(move |socket| {
                 future::loop_fn(socket, move |socket| {
-                    socket.recv_dgram([0; 8])
+                    socket
+                    .recv_dgram(vec![0u8; 256])
                     .map_err(QueryPublicAddrError::ReadResponse)
                     .and_then(move |(socket, data, len, addr)| {
                         if addr == server_addr {
                             let data = {
+                                trace!("server responded with: {:?}", &data[..len]);
                                 bincode::deserialize(&data[..len])
                                 .map_err(QueryPublicAddrError::Deserialize)
                             }?;
