@@ -65,18 +65,27 @@ impl Gateway {
         let gateway = self.inner.clone();
         let description = String::from(description);
         let (tx, rx) = oneshot::channel();
-        match local_addr_to_gateway(*gateway.addr.ip()) {
-            Ok(ipv4) => {
-                let _ = thread::spawn(move || {
-                    let local_addr = SocketAddrV4::new(ipv4, local_addr.port());
-                    let res = gateway.get_any_address(protocol, local_addr, lease_duration, &description);
-                    tx.send(res)
-                });
-            },
-            Err(e) => {
-                let _ = tx.send(Err(AddAnyPortError::RequestError(RequestError::IoError(e))));
-            },
+        let gateway_ip = *gateway.addr.ip();
+
+        let do_port_mapping  = move || {
+            if local_addr.ip().is_unspecified() {
+                match local_addr_to_gateway(gateway_ip) {
+                    Ok(ipv4) => {
+                        let local_addr = SocketAddrV4::new(ipv4, local_addr.port());
+                        let res = gateway.get_any_address(protocol, local_addr, lease_duration, &description);
+                        tx.send(res);
+                    },
+                    Err(e) => {
+                        let _ = tx.send(Err(AddAnyPortError::RequestError(RequestError::IoError(e))));
+                    },
+                };
+            } else {
+                let res = gateway.get_any_address(protocol, local_addr, lease_duration, &description);
+                tx.send(res);
+            }
         };
+
+        let _ = thread::spawn(do_port_mapping);
         GetAnyAddress { rx: rx }
     }
 }
