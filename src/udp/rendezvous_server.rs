@@ -1,6 +1,6 @@
 pub use priv_prelude::*;
 use bincode::{self, Infinite};
-use tokio_shared_udp_socket::SharedUdpSocket;
+use tokio_shared_udp_socket::{SharedUdpSocket, WithAddress};
 use bytes::Bytes;
 
 use ECHO_REQ;
@@ -72,22 +72,7 @@ fn from_socket_inner(
             with_addr
             .into_future()
             .map_err(|(e, _with_addr)| e)
-            .and_then(|(msg_opt, with_addr)| {
-                if let Some(msg) = msg_opt {
-                    if &msg == &ECHO_REQ[..] {
-                        let addr = with_addr.remote_addr();
-                        let encoded = unwrap!(bincode::serialize(&addr, Infinite));
-
-                        return {
-                            with_addr
-                            .send(Bytes::from(encoded))
-                            .map(|_with_addr| ())
-                            .into_boxed()
-                        }
-                    }
-                }
-                future::ok(()).into_boxed()
-            })
+            .and_then(|(msg_opt, with_addr)| on_addr_echo_request(msg_opt, with_addr))
         })
         .buffer_unordered(1024)
         .log_errors(LogLevel::Info, "processing echo request")
@@ -102,3 +87,22 @@ fn from_socket_inner(
     }
 }
 
+/// Handles randezvous server request.
+///
+/// Reponds with client address.
+fn on_addr_echo_request(msg_opt: Option<Bytes>, with_addr: WithAddress) ->  BoxFuture<(), io::Error> {
+    if let Some(msg) = msg_opt {
+        if &msg == &ECHO_REQ[..] {
+            let addr = with_addr.remote_addr();
+            let encoded = unwrap!(bincode::serialize(&addr, Infinite));
+
+            return {
+                with_addr
+                .send(Bytes::from(encoded))
+                .map(|_with_addr| ())
+                .into_boxed()
+            }
+        }
+    }
+    future::ok(()).into_boxed()
+}
