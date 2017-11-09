@@ -55,6 +55,11 @@ impl Future for GetAnyAddress {
 }
 
 impl Gateway {
+    /// Asynchronously maps local address to external one.
+    ///
+    /// # Returns
+    ///
+    /// Future that resolves to mapped external `IP:port`.
     pub fn get_any_address(
         &self,
         protocol: PortMappingProtocol,
@@ -62,33 +67,46 @@ impl Gateway {
         lease_duration: u32,
         description: &str,
     ) -> GetAnyAddress {
-        let gateway = self.inner.clone();
         let description = String::from(description);
+        let gateway = self.inner.clone();
         let (tx, rx) = oneshot::channel();
-        let gateway_ip = *gateway.addr.ip();
 
-        let do_port_mapping  = move || {
-            if local_addr.ip().is_unspecified() {
-                match local_addr_to_gateway(gateway_ip) {
-                    Ok(ipv4) => {
-                        let local_addr = SocketAddrV4::new(ipv4, local_addr.port());
-                        let res = gateway.get_any_address(protocol, local_addr, lease_duration, &description);
-                        tx.send(res);
-                    },
-                    Err(e) => {
-                        let _ = tx.send(Err(AddAnyPortError::RequestError(RequestError::IoError(e))));
-                    },
-                };
-            } else {
-                let res = gateway.get_any_address(protocol, local_addr, lease_duration, &description);
-                tx.send(res);
-            }
-        };
+        let _ = thread::spawn(move || {
+            let res = add_port_mapping(gateway, protocol, local_addr, lease_duration, description);
+            tx.send(res)
+        });
 
-        let _ = thread::spawn(do_port_mapping);
         GetAnyAddress { rx: rx }
     }
 }
+
+/// Maps given local address to external `IP:port`.
+/// If local address is unspecified (`0.0.0.0`), it's resolved by gateway address.
+///
+/// # Returns
+///
+/// Mapped external address on success.
+fn add_port_mapping(
+    gateway: igd::Gateway,
+    protocol: PortMappingProtocol,
+    local_addr: SocketAddrV4,
+    lease_duration: u32,
+    description: String,
+) -> Result<SocketAddrV4, AddAnyPortError> {
+    if local_addr.ip().is_unspecified() {
+        match local_addr_to_gateway(*gateway.addr.ip()) {
+            Ok(ipv4) => {
+                let local_addr = SocketAddrV4::new(ipv4, local_addr.port());
+                gateway.get_any_address(protocol, local_addr, lease_duration, &description)
+            },
+            // TODO(povilas): test upper layers, seems like this error is not handled.
+            Err(e) => Err(AddAnyPortError::RequestError(RequestError::IoError(e))),
+        }
+    } else {
+        gateway.get_any_address(protocol, local_addr, lease_duration, &description)
+    }
+}
+
 
 quick_error! {
     #[derive(Debug)]
