@@ -55,6 +55,9 @@ impl UdpRendezvousServer {
     }
 }
 
+/// Main UDP rendezvous server logic.
+///
+/// Spawns async task that reacts to rendezvous requests.
 fn from_socket_inner(
     socket: UdpSocket,
     bind_addr: &SocketAddr,
