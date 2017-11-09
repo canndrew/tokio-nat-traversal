@@ -25,4 +25,5 @@ log = "*"
 quick-error = "*"
 igd = "*"
 tokio-shared-udp-socket = "0.5.0"
+maplit = "*"
 

@@ -76,3 +76,27 @@ pub fn filter_addrs(
     .collect()
 }
 
+#[cfg(test)]
+#[test]
+fn test() {
+    let our_addrs = hashset!{addr!("78.60.234.207:45666"), addr!("192.168.0.1:45666"), addr!("127.0.0.1:45666")};
+    let their_addrs = hashset!{addr!("78.60.234.208:45667"), addr!("192.168.0.1:45667"), addr!("127.0.0.1:45667")};
+    let supposed_addrs = hashset!{addr!("78.60.234.208:45667")};
+    let result = filter_addrs(&our_addrs, &their_addrs);
+    assert_eq!(result, supposed_addrs);
+
+
+    let our_addrs = hashset!{addr!("78.60.234.207:45666"), addr!("192.168.0.1:45666"), addr!("127.0.0.1:45666")};
+    let their_addrs = hashset!{addr!("78.60.234.207:45667"), addr!("192.168.0.2:45667"), addr!("127.0.0.1:45667")};
+    let supposed_addrs = hashset!{addr!("78.60.234.207:45667"), addr!("192.168.0.2:45667")};
+    let result = filter_addrs(&our_addrs, &their_addrs);
+    assert_eq!(result, supposed_addrs);
+
+
+    let our_addrs = hashset!{addr!("78.60.234.207:45666"), addr!("192.168.0.1:45666"), addr!("127.0.0.1:45666")};
+    let their_addrs = hashset!{addr!("78.60.234.207:45667"), addr!("192.168.0.1:45667"), addr!("127.0.0.1:45667")};
+    let supposed_addrs = hashset!{addr!("78.60.234.207:45667"), addr!("192.168.0.1:45667"), addr!("127.0.0.1:45667")};
+    let result = filter_addrs(&our_addrs, &their_addrs);
+    assert_eq!(result, supposed_addrs);
+}
+

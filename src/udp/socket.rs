@@ -300,6 +300,7 @@ impl UdpSocketExt for UdpSocket {
                         .and_then(move |(sockets, rendezvous_error_opt)| {
                             let (sockets, rendezvous_addrs) = sockets.into_iter().unzip::<_, _, Vec<_>, _>();
                             trace!("our rendezvous addresses are: {:#?}", rendezvous_addrs);
+                            trace!("our open addresses are: {:#?}", our_addrs);
                             let msg = UdpRendezvousMsg::Init {
                                 enc_pk: our_pk,
                                 open_addrs: our_addrs.clone(),
@@ -315,6 +316,7 @@ impl UdpSocketExt for UdpSocket {
                                 } = their_msg;
 
                                 trace!("their rendezvous addresses are: {:#?}", their_rendezvous_addrs);
+                                trace!("their open addresses are: {:#?}", their_open_addrs);
                                 let mut punchers = FuturesUnordered::new();
                                 let iter = {
                                     sockets
@@ -334,7 +336,7 @@ impl UdpSocketExt for UdpSocket {
 
                                 let their_open_addrs = filter_addrs(&our_addrs, &their_open_addrs);
 
-                                trace!("their open addresses are: {:#?}", their_open_addrs);
+                                trace!("their (filtered) open addresses are: {:#?}", their_open_addrs);
                                 let incoming = {
                                     open_connect(&handle2, listen_socket, their_open_addrs, false)
                                     .select(punchers)

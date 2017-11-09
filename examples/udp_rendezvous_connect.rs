@@ -20,6 +20,7 @@ extern crate futures;
 extern crate future_utils;
 extern crate bytes;
 extern crate void;
+extern crate env_logger;
 
 use std::{env, fmt};
 use std::net::SocketAddr;
@@ -63,6 +64,8 @@ impl<S: Sink> Sink for DummyDebug<S> {
 }
 
 fn main() {
+    unwrap!(env_logger::init());
+
     let mut args = env::args().skip(1);
 
     let relay_addr_str = match args.next() {
