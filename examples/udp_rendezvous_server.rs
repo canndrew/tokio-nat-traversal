@@ -1,3 +1,15 @@
+//! This example runs a demo rendezvous server listening on UDP port.
+//! Randezvous server listens for echo requests and responds with clients address.
+//! For example you can test this example with `netcat`:
+//!
+//! ```
+//! echo -n "ECHOADDR" | nc -u $addr $port
+//! 85.102.203.141:54824
+//! ```
+//!
+//! where `$addr` and `$port` are printed to stdout when you run this example.
+//! The second line is public address of the peer that called `nc`.
+
 #[macro_use]
 extern crate unwrap;
 #[macro_use]
