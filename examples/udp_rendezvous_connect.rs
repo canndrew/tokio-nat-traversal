@@ -9,7 +9,7 @@
 ///
 /// $ cargo run --example udp_rendezvous_connect -- <address of your vps>:45666 blah blah blah
 /// $ cargo run --example udp_rendezvous_connect -- <address of your vps>:45667 blah blah blah
-/// 
+///
 /// If successful, the peers should be able to communicate directly with each other over UDP.
 #[macro_use]
 extern crate unwrap;
@@ -28,7 +28,6 @@ extern crate env_logger;
 
 use std::{env, fmt};
 use std::net::SocketAddr;
-use std::str::FromStr;
 use tokio_core::net::{TcpStream, UdpSocket};
 use futures::{future, Future, Stream, Sink, Async, AsyncSink};
 use futures::future::Loop;
