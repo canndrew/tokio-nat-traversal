@@ -106,3 +106,26 @@ fn on_addr_echo_request(msg_opt: Option<Bytes>, with_addr: WithAddress) ->  BoxF
     }
     future::ok(()).into_boxed()
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use tokio_core::reactor::Core;
+
+    mod on_addr_echo_request {
+        use super::*;
+
+        #[test]
+        fn it_returns_finished_future_when_message_is_none() {
+            let ev_loop = unwrap!(Core::new());
+            let udp_sock = SharedUdpSocket::share(unwrap!(
+                    UdpSocket::bind(&addr!("0.0.0.0:0"), &ev_loop.handle())));
+            let udp_sock = udp_sock.with_address(addr!("192.168.1.2:1234"));
+
+            let fut = on_addr_echo_request(None, udp_sock);
+
+            let res = unwrap!(fut.wait());
+            assert_eq!(res, ());
+        }
+    }
+}
