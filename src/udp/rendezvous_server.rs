@@ -1,6 +1,6 @@
 pub use priv_prelude::*;
 use bincode::{self, Infinite};
-use tokio_shared_udp_socket::SharedUdpSocket;
+use tokio_shared_udp_socket::{SharedUdpSocket, WithAddress};
 use bytes::Bytes;
 
 use ECHO_REQ;
@@ -55,6 +55,9 @@ impl UdpRendezvousServer {
     }
 }
 
+/// Main UDP rendezvous server logic.
+///
+/// Spawns async task that reacts to rendezvous requests.
 fn from_socket_inner(
     socket: UdpSocket,
     bind_addr: &SocketAddr,
@@ -69,22 +72,7 @@ fn from_socket_inner(
             with_addr
             .into_future()
             .map_err(|(e, _with_addr)| e)
-            .and_then(|(msg_opt, with_addr)| {
-                if let Some(msg) = msg_opt {
-                    if &msg == &ECHO_REQ[..] {
-                        let addr = with_addr.remote_addr();
-                        let encoded = unwrap!(bincode::serialize(&addr, Infinite));
-
-                        return {
-                            with_addr
-                            .send(Bytes::from(encoded))
-                            .map(|_with_addr| ())
-                            .into_boxed()
-                        }
-                    }
-                }
-                future::ok(()).into_boxed()
-            })
+            .and_then(|(msg_opt, with_addr)| on_addr_echo_request(msg_opt, with_addr))
         })
         .buffer_unordered(1024)
         .log_errors(LogLevel::Info, "processing echo request")
@@ -99,3 +87,45 @@ fn from_socket_inner(
     }
 }
 
+/// Handles randezvous server request.
+///
+/// Reponds with client address.
+fn on_addr_echo_request(msg_opt: Option<Bytes>, with_addr: WithAddress) ->  BoxFuture<(), io::Error> {
+    if let Some(msg) = msg_opt {
+        if &msg == &ECHO_REQ[..] {
+            let addr = with_addr.remote_addr();
+            let encoded = unwrap!(bincode::serialize(&addr, Infinite));
+
+            return {
+                with_addr
+                .send(Bytes::from(encoded))
+                .map(|_with_addr| ())
+                .into_boxed()
+            }
+        }
+    }
+    future::ok(()).into_boxed()
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use tokio_core::reactor::Core;
+
+    mod on_addr_echo_request {
+        use super::*;
+
+        #[test]
+        fn it_returns_finished_future_when_message_is_none() {
+            let ev_loop = unwrap!(Core::new());
+            let udp_sock = SharedUdpSocket::share(unwrap!(
+                    UdpSocket::bind(&addr!("0.0.0.0:0"), &ev_loop.handle())));
+            let udp_sock = udp_sock.with_address(addr!("192.168.1.2:1234"));
+
+            let fut = on_addr_echo_request(None, udp_sock);
+
+            let res = unwrap!(fut.wait());
+            assert_eq!(res, ());
+        }
+    }
+}
